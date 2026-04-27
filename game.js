@@ -171,7 +171,7 @@ function buildMap() {
   const fc = { type: "FeatureCollection", features: state.features };
 
   projection = d3.geoMercator()
-    .fitExtent([[40, 40], [W - 40, H - 40]], fc);
+    .fitExtent([[32, 32], [W - 32, H - 32]], fc);
 
   pathGen = d3.geoPath().projection(projection);
 
@@ -446,7 +446,9 @@ function bearingToArrow(deg) {
 }
 
 function fmtKm(km) {
-  return km >= 1000 ? (km/1000).toFixed(1)+" Mm" : Math.round(km)+" km";
+  if (km >= 10000) return Math.round(km / 1000) + " tys. km";
+  if (km >= 1000)  return (km / 1000).toFixed(1) + " tys. km";
+  return Math.round(km) + " km";
 }
 
 function shakeInput() {
