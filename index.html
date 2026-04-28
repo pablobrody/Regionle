@@ -11,120 +11,91 @@
 <body>
   <div class="app">
 
-    <!-- HEADER -->
     <header class="header">
-      <div class="header-left">
-        <div class="logo">
-          <span class="logo-icon">◈</span>
-          <span class="logo-text">Regionle</span>
-        </div>
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">Regionle</span>
       </div>
       <div class="header-right">
-        <label class="toggle-label" title="Show region names on map">
+        <label class="toggle-label" title="Show region names">
           <input type="checkbox" id="toggleLabels" />
-          <span class="toggle-track">
-            <span class="toggle-thumb"></span>
-          </span>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span class="toggle-text">Show names</span>
         </label>
-        <button class="icon-btn" id="btnHow" title="How to play">?</button>
+        <button class="icon-btn" id="btnHow">?</button>
       </div>
     </header>
 
-    <!-- MAIN -->
     <main class="main">
 
-      <!-- MAP PANEL -->
       <div class="map-panel">
         <div class="map-container" id="mapContainer">
           <svg id="mapSvg"></svg>
           <div class="map-overlay" id="mapOverlay">
-            <div class="map-overlay-inner">
-              <span class="overlay-icon">◈</span>
-              <p>Loading map data…</p>
+            <div class="overlay-inner">
+              <div class="overlay-spinner"></div>
+              <p id="overlayMsg">Loading…</p>
             </div>
           </div>
         </div>
-        <div class="map-meta" id="mapMeta">
-          <span class="regions-revealed" id="regionsRevealed">— regions revealed</span>
+        <div class="map-footer">
+          <span id="regionsRevealed">— regions revealed</span>
         </div>
       </div>
 
-      <!-- SIDEBAR -->
       <aside class="sidebar">
-
-        <!-- Input section -->
-        <div class="guess-section">
-          <p class="section-label">Which country is this?</p>
+        <div class="card guess-card">
+          <p class="card-label">Which country is this?</p>
           <div class="input-wrap">
-            <input
-              type="text"
-              id="guessInput"
-              class="guess-input"
-              placeholder="Type a country…"
-              autocomplete="off"
-              spellcheck="false"
-            />
+            <input type="text" id="guessInput" class="guess-input"
+              placeholder="Type a country…" autocomplete="off" spellcheck="false" />
             <div class="autocomplete-list" id="autocompleteList"></div>
           </div>
           <button class="btn-guess" id="btnGuess">Guess →</button>
         </div>
 
-        <!-- Guesses list -->
-        <div class="guesses-section" id="guessesSection">
-          <p class="section-label">Your guesses</p>
+        <div class="card guesses-card">
+          <p class="card-label">Your guesses</p>
           <div class="guesses-list" id="guessesList">
-            <div class="empty-state">No guesses yet — give it a shot!</div>
+            <p class="empty-msg">No guesses yet!</p>
           </div>
         </div>
 
-        <!-- Stats bar -->
-        <div class="stats-bar" id="statsBar">
-          <div class="stat">
-            <span class="stat-value" id="statPlayed">0</span>
-            <span class="stat-key">Played</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="statWon">0</span>
-            <span class="stat-key">Won</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="statStreak">0</span>
-            <span class="stat-key">Streak</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="statAvg">—</span>
-            <span class="stat-key">Avg guesses</span>
-          </div>
+        <div class="card stats-card">
+          <div class="stat"><span class="stat-val" id="statPlayed">0</span><span class="stat-key">Played</span></div>
+          <div class="stat"><span class="stat-val" id="statWon">0</span><span class="stat-key">Won</span></div>
+          <div class="stat"><span class="stat-val" id="statStreak">0</span><span class="stat-key">Streak</span></div>
+          <div class="stat"><span class="stat-val" id="statAvg">—</span><span class="stat-key">Avg</span></div>
         </div>
-
       </aside>
+
     </main>
 
-    <!-- RESULT MODAL -->
-    <div class="modal-backdrop" id="resultBackdrop">
-      <div class="modal" id="resultModal">
+    <!-- Result modal -->
+    <div class="backdrop" id="resultBackdrop">
+      <div class="modal">
+        <button class="modal-x" id="modalClose">✕</button>
         <div class="modal-icon" id="modalIcon">🎉</div>
         <h2 class="modal-title" id="modalTitle">Correct!</h2>
-        <p class="modal-body" id="modalBody"></p>
         <div class="modal-flag" id="modalFlag"></div>
+        <p class="modal-body" id="modalBody"></p>
         <button class="btn-next" id="btnNext">Play again →</button>
-        <button class="modal-close" id="modalClose">✕</button>
       </div>
     </div>
 
-    <!-- HOW TO PLAY MODAL -->
-    <div class="modal-backdrop" id="howBackdrop">
+    <!-- How to play modal -->
+    <div class="backdrop" id="howBackdrop">
       <div class="modal modal-how">
+        <button class="modal-x" id="howClose">✕</button>
         <h2 class="modal-title">How to play</h2>
-        <ol class="how-list">
-          <li>A random <strong>region</strong> (state, province, voivodeship…) of a mystery country appears on the map.</li>
-          <li>Type your guess for the <strong>country</strong> and hit <em>Guess</em>.</li>
-          <li>Wrong? A <strong>new region</strong> is revealed and you see how far your guess was from the correct answer.</li>
-          <li>Keep guessing until you find it. Fewer regions = better score!</li>
+        <ol class="how-ol">
+          <li>A random <strong>region</strong> of a mystery country appears.</li>
+          <li>Guess the <strong>country</strong>. Wrong? Another region is revealed.</li>
+          <li>You also see how far your guess was from the answer.</li>
+          <li>Fewer regions revealed = better score!</li>
         </ol>
-        <p class="how-tip">💡 Toggle <strong>Show names</strong> to reveal region labels as a hint.</p>
-        <button class="btn-next" id="howClose">Got it →</button>
+        <p class="how-tip">💡 Toggle <em>Show names</em> to see region labels.</p>
+        <button class="btn-next" id="howGot">Got it →</button>
       </div>
     </div>
 
