@@ -1,25 +1,19 @@
 /**
  * countries.js — Regionle
- * ─────────────────────────────────────────────────────────────
- * HOW TO ADD A NEW COUNTRY:
- *  1. Get a GeoJSON with Admin-1 regions for that country.
- *     Best source: Natural Earth → mapshaper.org (filter by adm0_a3)
- *     Or per-country files from geoBoundaries.
- *  2. Save as  data/countries/<id>.geojson
- *  3. Add one entry below.
- *  4. If the country has overseas territories that distort the map,
- *     add a bbox entry in COUNTRY_CONFIG inside game.js.
  *
- * FIELDS:
- *   id           – ISO 3166-1 alpha-2 lowercase  (used in geojson path)
- *   isoA3        – ISO 3166-1 alpha-3 uppercase  (used to filter Natural Earth files)
- *   name         – English name shown in autocomplete
- *   flag         – emoji flag
- *   capital      – [lat, lng] used for distance calculation
- *   nameProperty – GeoJSON property key for region name (usually "name")
- *   geojson      – path to the GeoJSON file
+ * Aby dodać nowy kraj:
+ * 1. Dodaj plik  data/countries/<id>.geojson  (per-kraj, bez innych państw)
+ * 2. Dopisz obiekt poniżej
+ *
+ * Pola:
+ *   id           – ISO 3166-1 alpha-2 (małe litery), = nazwa pliku bez rozszerzenia
+ *   isoA3        – ISO 3166-1 alpha-3 (wielkie), potrzebne do skryptu split_geojson.py
+ *   name         – angielska nazwa (autocomplete)
+ *   flag         – emoji flagi
+ *   capital      – [lat, lng] stolicy (do obliczania odległości)
+ *   nameProperty – klucz właściwości z nazwą regionu w GeoJSON (zazwyczaj "name")
+ *   geojson      – ścieżka do pliku GeoJSON
  */
-
 window.COUNTRIES = [
   {
     id: "pl", isoA3: "POL",
