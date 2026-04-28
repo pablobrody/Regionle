@@ -1,410 +1,361 @@
 /**
  * game.js — Regionle
- * Loads ONE file per country (data/countries/xx.geojson).
- * Shows ONLY that country's regions, centered and zoomed tightly.
- * Reveals regions one-by-one on wrong guesses.
+ *
+ * Assumes per-country GeoJSON files in data/countries/<id>.geojson
+ * Each file contains ONLY the regions of one country (already split by split_geojson.py).
+ *
+ * Key design decisions:
+ * - No world-file filtering — each file is one country only
+ * - Projection fitted to the exact bounding box of regions in that file
+ * - Regions are invisible until revealed (fill:none, stroke:none)
+ * - On reveal: solid fill + dark stroke between regions
  */
 
-/* ═══════════════════════════════════════════════════════════════
-   PER-COUNTRY BBOX CONFIG
-   Clips overseas territories so the map stays focused.
+/* ─── per-country bounding box overrides ───────────────────────
+   If a country's file still contains overseas territories that
+   distort the map, list their exclusion bbox here.
    Format: [minLon, minLat, maxLon, maxLat]
-   null = use full extent of the file (fine for compact countries)
-════════════════════════════════════════════════════════════════ */
-const COUNTRY_CONFIG = {
-  pl: { bbox: null },
-  de: { bbox: null },
-  it: { bbox: [6, 36, 19, 48] },
-  jp: { bbox: [122, 24, 154, 46] },
-  au: { bbox: [112, -44, 154, -10] },
-  br: { bbox: null },
-  us: { bbox: [-130, 24, -65, 50] },   // contiguous 48 states + clips territories
-  fr: { bbox: [-5, 41, 10, 52] },      // metropolitan France only
+   null = use whatever is in the file ─────────────────────────── */
+const BBOX_OVERRIDE = {
+  us: [-130, 24, -65, 50],
+  fr: [-5, 41, 10, 52],
+  it: [6, 36, 19, 48],
+  jp: [122, 24, 154, 46],
+  au: [112, -44, 154, -10],
 };
 
-/* ═══════════════════════════════════════════════════════════════
-   STATE
-════════════════════════════════════════════════════════════════ */
+/* ─── STATE ─────────────────────────────────────────────────── */
 let state = {
-  country:     null,
-  features:    [],
-  regionOrder: [],
-  revealed:    0,
-  guesses:     [],
-  won:         false,
-  over:        false,
+  country: null,
+  features: [],
+  order: [],
+  revealed: 0,
+  guesses: [],
+  won: false,
+  over: false,
 };
-
-let stats      = loadStats();
-let svg, gMap, projection, pathGen;
+let stats = loadStats();
 let showLabels = false;
+let svgEl, gMap, proj, geoPath;
 
-/* ═══════════════════════════════════════════════════════════════
-   DOM
-════════════════════════════════════════════════════════════════ */
-const $   = id => document.getElementById(id);
-const els = {
-  mapSvg:           $("mapSvg"),
-  mapContainer:     $("mapContainer"),
-  mapOverlay:       $("mapOverlay"),
-  regionsRevealed:  $("regionsRevealed"),
-  guessInput:       $("guessInput"),
-  autocompleteList: $("autocompleteList"),
-  btnGuess:         $("btnGuess"),
-  guessesList:      $("guessesList"),
-  toggleLabels:     $("toggleLabels"),
-  btnHow:           $("btnHow"),
-  resultBackdrop:   $("resultBackdrop"),
-  modalIcon:        $("modalIcon"),
-  modalTitle:       $("modalTitle"),
-  modalBody:        $("modalBody"),
-  modalFlag:        $("modalFlag"),
-  btnNext:          $("btnNext"),
-  modalClose:       $("modalClose"),
-  howBackdrop:      $("howBackdrop"),
-  howClose:         $("howClose"),
-  statPlayed:       $("statPlayed"),
-  statWon:          $("statWon"),
-  statStreak:       $("statStreak"),
-  statAvg:          $("statAvg"),
+/* ─── DOM ───────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const el = {
+  svg:       $("mapSvg"),
+  container: $("mapContainer"),
+  overlay:   $("mapOverlay"),
+  overlayMsg:$("overlayMsg"),
+  revealed:  $("regionsRevealed"),
+  input:     $("guessInput"),
+  acList:    $("autocompleteList"),
+  btnGuess:  $("btnGuess"),
+  gList:     $("guessesList"),
+  toggleLbl: $("toggleLabels"),
+  btnHow:    $("btnHow"),
+  // result modal
+  resultBg:  $("resultBackdrop"),
+  mIcon:     $("modalIcon"),
+  mTitle:    $("modalTitle"),
+  mFlag:     $("modalFlag"),
+  mBody:     $("modalBody"),
+  btnNext:   $("btnNext"),
+  mClose:    $("modalClose"),
+  // how modal
+  howBg:     $("howBackdrop"),
+  howClose:  $("howClose"),
+  howGot:    $("howGot"),
+  // stats
+  sPlayed:   $("statPlayed"),
+  sWon:      $("statWon"),
+  sStreak:   $("statStreak"),
+  sAvg:      $("statAvg"),
 };
 
-/* ═══════════════════════════════════════════════════════════════
-   INIT
-════════════════════════════════════════════════════════════════ */
+/* ─── INIT ──────────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", () => {
-  svg  = d3.select(els.mapSvg);
-  gMap = svg.append("g");
+  svgEl = d3.select(el.svg);
+  gMap  = svgEl.append("g").attr("class", "map-g");
 
-  const zoom = d3.zoom()
-    .scaleExtent([0.3, 20])
-    .on("zoom", e => gMap.attr("transform", e.transform));
-  svg.call(zoom);
+  // zoom + pan
+  svgEl.call(
+    d3.zoom().scaleExtent([.5, 15])
+      .on("zoom", e => gMap.attr("transform", e.transform))
+  );
 
   bindEvents();
   renderStats();
-  startNewRound();
+  newRound();
 });
 
-/* ═══════════════════════════════════════════════════════════════
-   NEW ROUND
-════════════════════════════════════════════════════════════════ */
-async function startNewRound() {
+/* ─── NEW ROUND ─────────────────────────────────────────────── */
+async function newRound() {
   const country = COUNTRIES[Math.floor(Math.random() * COUNTRIES.length)];
 
-  state = {
-    country,
-    features:    [],
-    regionOrder: [],
-    revealed:    0,
-    guesses:     [],
-    won:         false,
-    over:        false,
-  };
+  state = { country, features: [], order: [], revealed: 0,
+            guesses: [], won: false, over: false };
 
-  els.guessesList.innerHTML       = '<div class="empty-state">No guesses yet — give it a shot!</div>';
-  els.guessInput.value            = "";
-  els.guessInput.disabled         = false;
-  els.btnGuess.disabled           = false;
-  els.regionsRevealed.textContent = "— regions revealed";
+  el.gList.innerHTML = '<p class="empty-msg">No guesses yet!</p>';
+  el.input.value     = "";
+  el.input.disabled  = false;
+  el.btnGuess.disabled = false;
+  el.revealed.textContent = "— regions revealed";
   gMap.selectAll("*").remove();
   showOverlay("Loading map…");
 
   try {
-    const raw  = await d3.json(country.geojson);
-    const cfg  = COUNTRY_CONFIG[country.id] || { bbox: null };
-    let feats  = raw.features || [];
+    const raw   = await d3.json(country.geojson);
+    let feats   = (raw.features || []).filter(f => f.geometry);
 
-    // ── Filter by country if the file is world-wide ──────────
-    // Natural Earth admin-1 files have adm0_a3 / iso_a2 properties.
-    // Per-country files won't have them, so we keep everything.
-    const firstProps = feats[0]?.properties || {};
-    const isWorldFile = !!(firstProps.adm0_a3 || firstProps.iso_a2 || firstProps.ADM0_A3);
-
-    if (isWorldFile) {
+    // Apply bbox override to drop overseas territories
+    const bbox = BBOX_OVERRIDE[country.id];
+    if (bbox) {
       feats = feats.filter(f => {
-        const p   = f.properties || {};
-        const iso2 = (p.iso_a2  || p.ISO_A2  || "").toUpperCase();
-        const iso3 = (p.adm0_a3 || p.ADM0_A3 || "").toUpperCase();
-        return iso2 === country.id.toUpperCase() ||
-               iso3 === (country.isoA3 || "").toUpperCase();
-      });
-    }
-
-    // ── Clip by bbox (removes overseas territories) ───────────
-    if (cfg.bbox) {
-      const [minLon, minLat, maxLon, maxLat] = cfg.bbox;
-      feats = feats.filter(f => {
-        const c = roughCentroid(f);
-        return c && c[0] >= minLon && c[0] <= maxLon &&
-                    c[1] >= minLat && c[1] <= maxLat;
+        const c = geoCentroid(f);
+        return c && c[0] >= bbox[0] && c[0] <= bbox[2]
+                 && c[1] >= bbox[1] && c[1] <= bbox[3];
       });
     }
 
     if (!feats.length) {
-      showOverlay("⚠ No regions found in this file.\nCheck countries.js and the GeoJSON.");
+      showOverlay("⚠ No regions found.\nCheck the GeoJSON file.");
       return;
     }
 
-    state.features    = feats;
-    state.regionOrder = shuffle(feats.map((_, i) => i));
+    state.features = feats;
+    state.order    = shuffle(feats.map((_, i) => i));
 
     hideOverlay();
     buildMap();
     revealNext();
 
-  } catch (e) {
-    console.error(e);
-    showOverlay("⚠ Could not load map data.\nMake sure the .geojson file exists.");
+  } catch (err) {
+    console.error(err);
+    showOverlay("⚠ Failed to load map.\nMake sure the GeoJSON file exists in data/countries/");
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   BUILD MAP
-   Projects ONLY this country's regions, fitting them to the canvas.
-════════════════════════════════════════════════════════════════ */
+/* ─── BUILD MAP ─────────────────────────────────────────────── */
 function buildMap() {
-  const W = els.mapContainer.clientWidth  || 800;
-  const H = els.mapContainer.clientHeight || 500;
-  svg.attr("viewBox", `0 0 ${W} ${H}`);
+  const W = el.container.clientWidth  || 800;
+  const H = el.container.clientHeight || 500;
+  svgEl.attr("viewBox", `0 0 ${W} ${H}`);
 
-  const fc = { type: "FeatureCollection", features: state.features };
+  // Fit projection tightly around just these features
+  const fc = geoFC(state.features);
+  proj    = d3.geoMercator().fitExtent([[24, 24], [W - 24, H - 24]], fc);
+  geoPath = d3.geoPath().projection(proj);
 
-  projection = d3.geoMercator()
-    .fitExtent([[32, 32], [W - 32, H - 32]], fc);
+  // Ocean background rect
+  gMap.append("rect")
+    .attr("class", "map-ocean")
+    .attr("width", W).attr("height", H);
 
-  pathGen = d3.geoPath().projection(projection);
-
-  // All paths — invisible until revealed
+  // One path per region — hidden initially
   state.features.forEach((feat, i) => {
+    const d = geoPath(feat);
+    if (!d) return;
     gMap.append("path")
-      .datum(feat)
       .attr("class", "region-path")
-      .attr("d", pathGen)
+      .attr("d", d)
       .attr("data-i", i);
   });
 
-  // All labels — invisible until revealed (and only if toggle is on)
+  // One label per region — hidden initially
   state.features.forEach((feat, i) => {
-    const c    = pathGen.centroid(feat);
-    if (isNaN(c[0])) return;
-    const name = pickName(feat, state.country);
+    const c = geoPath.centroid(feat);
+    if (!c || isNaN(c[0]) || isNaN(c[1])) return;
+    const name = regionName(feat, state.country);
+    if (!name) return;
     gMap.append("text")
       .attr("class", "region-label")
-      .attr("x", c[0])
-      .attr("y", c[1])
+      .attr("x", c[0]).attr("y", c[1])
       .attr("data-i", i)
       .text(name);
   });
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   REVEAL
-════════════════════════════════════════════════════════════════ */
+/* ─── REVEAL ────────────────────────────────────────────────── */
 function revealNext() {
-  if (state.revealed >= state.regionOrder.length) return;
-  const idx = state.regionOrder[state.revealed];
-  state.revealed++;
+  if (state.revealed >= state.order.length) return;
+  const idx = state.order[state.revealed++];
 
   gMap.selectAll(".region-path")
     .filter(function() { return +this.getAttribute("data-i") === idx; })
     .classed("visible", true);
 
-  if (showLabels) {
-    gMap.selectAll(".region-label")
-      .filter(function() { return +this.getAttribute("data-i") === idx; })
-      .classed("show", true);
-  }
+  if (showLabels) showLabelAt(idx);
 
   const total = state.features.length;
-  els.regionsRevealed.textContent =
+  el.revealed.textContent =
     `${state.revealed} / ${total} region${total !== 1 ? "s" : ""} revealed`;
 }
 
 function revealAll(won) {
   gMap.selectAll(".region-path")
-    .classed("visible", true)
+    .classed("visible", won ? false : true)
     .classed("won", won);
   gMap.selectAll(".region-label").classed("show", true);
-  els.regionsRevealed.textContent = `All ${state.features.length} regions revealed`;
+  el.revealed.textContent = `All ${state.features.length} regions revealed`;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   GUESS
-════════════════════════════════════════════════════════════════ */
+function showLabelAt(idx) {
+  gMap.selectAll(".region-label")
+    .filter(function() { return +this.getAttribute("data-i") === idx; })
+    .classed("show", true);
+}
+
+/* ─── GUESS ─────────────────────────────────────────────────── */
 function submitGuess() {
-  if (state.over || state.won) return;
-  const raw   = els.guessInput.value.trim();
-  const guess = COUNTRIES.find(c => c.name.toLowerCase() === raw.toLowerCase());
-  closeAutocomplete();
+  if (state.over) return;
+  const raw = el.input.value.trim();
+  const match = COUNTRIES.find(c => c.name.toLowerCase() === raw.toLowerCase());
+  closeAC();
+  if (!match) { shake(); return; }
 
-  if (!guess) { shakeInput(); return; }
+  const correct = match.id === state.country.id;
+  const distKm  = haversine(match.capital, state.country.capital);
+  const bearing = calcBearing(match.capital, state.country.capital);
 
-  const correct = guess.id === state.country.id;
-  const distKm  = haversineKm(guess.capital, state.country.capital);
-  const bearing = calcBearing(guess.capital, state.country.capital);
-
-  state.guesses.push({ name: guess.name, flag: guess.flag, distKm, bearing, correct });
-  renderGuessRow({ name: guess.name, flag: guess.flag, distKm, bearing, correct });
-  els.guessInput.value = "";
+  state.guesses.push({ name: match.name, flag: match.flag, distKm, bearing, correct });
+  addGuessRow({ name: match.name, flag: match.flag, distKm, bearing, correct });
+  el.input.value = "";
 
   if (correct) {
-    state.won  = true;
-    state.over = true;
+    state.won = state.over = true;
     revealAll(true);
-    finishRound(true);
+    endRound(true);
   } else {
     revealNext();
   }
 }
 
-function renderGuessRow(e) {
-  const empty = els.guessesList.querySelector(".empty-state");
-  if (empty) empty.remove();
+function addGuessRow(g) {
+  el.gList.querySelector(".empty-msg")?.remove();
 
-  const dc  = e.distKm < 1500 ? "dist-hot" : e.distKm < 4000 ? "dist-warm" : "dist-cold";
-  const arr = e.correct ? "✓" : bearingToArrow(e.bearing);
+  const dc = g.distKm < 1500 ? "dist-hot" : g.distKm < 5000 ? "dist-warm" : "";
+  const arrow = g.correct ? "✓" : bearingArrow(g.bearing);
+  const dist  = g.correct ? "" : fmtDist(g.distKm);
 
   const row = document.createElement("div");
-  row.className = "guess-row" + (e.correct ? " correct" : "");
+  row.className = `guess-row${g.correct ? " correct" : ""}`;
   row.innerHTML = `
-    <span class="guess-flag">${e.flag}</span>
-    <span class="guess-name">${e.name}</span>
-    <span class="guess-dist ${dc}">${e.correct ? "✓" : fmtKm(e.distKm)}</span>
-    <span class="guess-arrow">${arr}</span>
-  `;
-  els.guessesList.prepend(row);
+    <span class="g-flag">${g.flag}</span>
+    <span class="g-name">${g.name}</span>
+    <span class="g-dist ${dc}">${dist}</span>
+    <span class="g-arrow">${arrow}</span>`;
+  el.gList.prepend(row);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   FINISH ROUND
-════════════════════════════════════════════════════════════════ */
-function finishRound(won) {
+/* ─── END ROUND ─────────────────────────────────────────────── */
+function endRound(won) {
   const n = state.guesses.length;
   stats.played++;
-  if (won) { stats.won++; stats.streak++; stats.totalGuessesOnWin += n; }
+  if (won) { stats.won++; stats.streak++; stats.totalGuessesWon += n; }
   else      { stats.streak = 0; }
   saveStats(); renderStats();
 
   setTimeout(() => {
-    els.modalIcon.textContent  = won ? "🎉" : "💀";
-    els.modalTitle.textContent = won ? "Correct!" : "Game over";
-    els.modalFlag.textContent  = state.country.flag;
-    els.modalBody.textContent  = won
+    el.mIcon.textContent  = won ? "🎉" : "💀";
+    el.mTitle.textContent = won ? "Correct!" : "Game over";
+    el.mFlag.textContent  = state.country.flag;
+    el.mBody.textContent  = won
       ? `You found ${state.country.name} in ${n} guess${n !== 1 ? "es" : ""}!`
       : `The answer was ${state.country.name}.`;
-    openModal(els.resultBackdrop);
-  }, 600);
+    openModal(el.resultBg);
+  }, 500);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   AUTOCOMPLETE
-════════════════════════════════════════════════════════════════ */
-let acIndex = -1;
+/* ─── AUTOCOMPLETE ──────────────────────────────────────────── */
+let acIdx = -1;
 
 function handleInput() {
-  const val = els.guessInput.value.trim().toLowerCase();
-  if (!val) { closeAutocomplete(); return; }
+  const v = el.input.value.trim().toLowerCase();
+  if (!v) { closeAC(); return; }
+  const hits = COUNTRIES.filter(c => c.name.toLowerCase().includes(v)).slice(0, 8);
+  if (!hits.length) { closeAC(); return; }
 
-  const matches = COUNTRIES.filter(c => c.name.toLowerCase().includes(val)).slice(0, 8);
-  if (!matches.length) { closeAutocomplete(); return; }
-
-  acIndex = -1;
-  els.autocompleteList.innerHTML = matches.map((c, i) =>
-    `<div class="autocomplete-item" data-index="${i}" data-name="${c.name}">${c.flag} ${c.name}</div>`
+  acIdx = -1;
+  el.acList.innerHTML = hits.map((c, i) =>
+    `<div class="ac-item" data-i="${i}" data-name="${c.name}">${c.flag} ${c.name}</div>`
   ).join("");
-
-  els.autocompleteList.querySelectorAll(".autocomplete-item").forEach(item => {
-    item.addEventListener("mousedown", () => {
-      els.guessInput.value = item.dataset.name;
-      closeAutocomplete();
-    });
-  });
-  els.autocompleteList.classList.add("open");
+  el.acList.querySelectorAll(".ac-item").forEach(item =>
+    item.addEventListener("mousedown", () => { el.input.value = item.dataset.name; closeAC(); })
+  );
+  el.acList.classList.add("open");
 }
 
-function moveAutocomplete(dir) {
-  const items = els.autocompleteList.querySelectorAll(".autocomplete-item");
+function moveAC(dir) {
+  const items = el.acList.querySelectorAll(".ac-item");
   if (!items.length) return;
-  items[acIndex]?.classList.remove("active");
-  acIndex = Math.max(0, Math.min(items.length - 1, acIndex + dir));
-  items[acIndex].classList.add("active");
-  els.guessInput.value = items[acIndex].dataset.name;
+  items[acIdx]?.classList.remove("active");
+  acIdx = Math.max(0, Math.min(items.length - 1, acIdx + dir));
+  items[acIdx].classList.add("active");
+  el.input.value = items[acIdx].dataset.name;
 }
+function closeAC() { el.acList.classList.remove("open"); acIdx = -1; }
 
-function closeAutocomplete() {
-  els.autocompleteList.classList.remove("open");
-  acIndex = -1;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   EVENTS
-════════════════════════════════════════════════════════════════ */
+/* ─── EVENTS ────────────────────────────────────────────────── */
 function bindEvents() {
-  els.btnGuess.addEventListener("click", submitGuess);
-  els.guessInput.addEventListener("keydown", e => {
+  el.btnGuess.addEventListener("click", submitGuess);
+  el.input.addEventListener("input", handleInput);
+  el.input.addEventListener("blur", () => setTimeout(closeAC, 150));
+  el.input.addEventListener("keydown", e => {
     if      (e.key === "Enter")     submitGuess();
-    else if (e.key === "ArrowDown") moveAutocomplete(1);
-    else if (e.key === "ArrowUp")   moveAutocomplete(-1);
-    else if (e.key === "Escape")    closeAutocomplete();
+    else if (e.key === "ArrowDown") moveAC(1);
+    else if (e.key === "ArrowUp")   moveAC(-1);
+    else if (e.key === "Escape")    closeAC();
   });
-  els.guessInput.addEventListener("input", handleInput);
-  els.guessInput.addEventListener("blur", () => setTimeout(closeAutocomplete, 150));
 
-  els.toggleLabels.addEventListener("change", () => {
-    showLabels = els.toggleLabels.checked;
-    const revealedSet = new Set(state.regionOrder.slice(0, state.revealed));
+  el.toggleLbl.addEventListener("change", () => {
+    showLabels = el.toggleLbl.checked;
+    const revealed = new Set(state.order.slice(0, state.revealed));
     gMap.selectAll(".region-label").each(function() {
-      const i = +this.getAttribute("data-i");
-      d3.select(this).classed("show", showLabels && revealedSet.has(i));
+      d3.select(this).classed("show", showLabels && revealed.has(+this.getAttribute("data-i")));
     });
   });
 
-  els.btnHow.addEventListener("click",   () => openModal(els.howBackdrop));
-  els.howClose.addEventListener("click", () => closeModal(els.howBackdrop));
-  els.howBackdrop.addEventListener("click", e => {
-    if (e.target === els.howBackdrop) closeModal(els.howBackdrop);
-  });
-  els.btnNext.addEventListener("click", () => { closeModal(els.resultBackdrop); startNewRound(); });
-  els.modalClose.addEventListener("click", () => closeModal(els.resultBackdrop));
-  els.resultBackdrop.addEventListener("click", e => {
-    if (e.target === els.resultBackdrop) closeModal(els.resultBackdrop);
-  });
+  el.btnHow.addEventListener("click",   () => openModal(el.howBg));
+  el.howClose.addEventListener("click", () => closeModal(el.howBg));
+  el.howGot.addEventListener("click",   () => closeModal(el.howBg));
+  el.howBg.addEventListener("click", e => { if (e.target === el.howBg) closeModal(el.howBg); });
+
+  el.btnNext.addEventListener("click",  () => { closeModal(el.resultBg); newRound(); });
+  el.mClose.addEventListener("click",   () => closeModal(el.resultBg));
+  el.resultBg.addEventListener("click", e => { if (e.target === el.resultBg) closeModal(el.resultBg); });
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   STATS
-════════════════════════════════════════════════════════════════ */
-function loadStats() {
-  try { return JSON.parse(localStorage.getItem("regionle_stats")) || defaultStats(); }
-  catch { return defaultStats(); }
-}
-function defaultStats() { return { played:0, won:0, streak:0, totalGuessesOnWin:0 }; }
-function saveStats()    { localStorage.setItem("regionle_stats", JSON.stringify(stats)); }
-function renderStats()  {
-  els.statPlayed.textContent = stats.played;
-  els.statWon.textContent    = stats.won;
-  els.statStreak.textContent = stats.streak;
-  els.statAvg.textContent    = stats.won
-    ? (stats.totalGuessesOnWin / stats.won).toFixed(1) : "—";
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   MODAL HELPERS
-════════════════════════════════════════════════════════════════ */
+/* ─── MODAL ─────────────────────────────────────────────────── */
 function openModal(el)  { el.classList.add("open"); }
 function closeModal(el) { el.classList.remove("open"); }
 
+/* ─── OVERLAY ───────────────────────────────────────────────── */
 function showOverlay(msg) {
-  els.mapOverlay.querySelector("p").textContent = msg;
-  els.mapOverlay.classList.remove("hidden");
+  el.overlayMsg.textContent = msg;
+  el.overlay.classList.remove("hidden");
 }
-function hideOverlay() { els.mapOverlay.classList.add("hidden"); }
+function hideOverlay() { el.overlay.classList.add("hidden"); }
 
-/* ═══════════════════════════════════════════════════════════════
-   GEO UTILS
-════════════════════════════════════════════════════════════════ */
-function roughCentroid(feature) {
+/* ─── STATS ─────────────────────────────────────────────────── */
+function loadStats() {
+  try { return JSON.parse(localStorage.getItem("regionle_v2")) || fresh(); }
+  catch { return fresh(); }
+}
+function fresh() { return { played:0, won:0, streak:0, totalGuessesWon:0 }; }
+function saveStats() { localStorage.setItem("regionle_v2", JSON.stringify(stats)); }
+function renderStats() {
+  el.sPlayed.textContent = stats.played;
+  el.sWon.textContent    = stats.won;
+  el.sStreak.textContent = stats.streak;
+  el.sAvg.textContent    = stats.won
+    ? (stats.totalGuessesWon / stats.won).toFixed(1) : "—";
+}
+
+/* ─── GEO HELPERS ───────────────────────────────────────────── */
+function geoFC(features) {
+  return { type: "FeatureCollection", features };
+}
+
+function geoCentroid(feature) {
   try {
     const b = d3.geoBounds(feature);
     if (!b || isNaN(b[0][0])) return null;
@@ -412,52 +363,50 @@ function roughCentroid(feature) {
   } catch { return null; }
 }
 
-function pickName(feat, country) {
-  const p    = feat.properties || {};
+function regionName(feat, country) {
+  const p = feat.properties || {};
   const keys = [
-    country.nameProperty,
-    "name", "NAME", "name_en", "Name",
-    "admin", "gn_name", "region_nam", "state_name",
-    "shapeName", "shapeISO",
+    country.nameProperty, "name", "NAME", "name_en",
+    "admin", "region_nam", "state_name", "shapeName"
   ];
-  for (const k of keys) { if (p[k]) return p[k]; }
+  for (const k of keys) { if (p[k] && typeof p[k] === "string") return p[k]; }
   return "";
 }
 
-function haversineKm([lat1, lon1], [lat2, lon2]) {
+function haversine([lat1, lon1], [lat2, lon2]) {
   const R = 6371, r = Math.PI / 180;
-  const dLat = (lat2-lat1)*r, dLon = (lon2-lon1)*r;
+  const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
   const a = Math.sin(dLat/2)**2 +
-            Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            Math.cos(lat1*r) * Math.cos(lat2*r) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function calcBearing([lat1, lon1], [lat2, lon2]) {
-  const r    = Math.PI/180;
-  const dLon = (lon2-lon1)*r;
-  const y    = Math.sin(dLon)*Math.cos(lat2*r);
-  const x    = Math.cos(lat1*r)*Math.sin(lat2*r) -
-               Math.sin(lat1*r)*Math.cos(lat2*r)*Math.cos(dLon);
-  return (Math.atan2(y,x)*180/Math.PI+360)%360;
+  const r = Math.PI / 180;
+  const y = Math.sin((lon2-lon1)*r) * Math.cos(lat2*r);
+  const x = Math.cos(lat1*r)*Math.sin(lat2*r) -
+            Math.sin(lat1*r)*Math.cos(lat2*r)*Math.cos((lon2-lon1)*r);
+  return (Math.atan2(y, x) * 180/Math.PI + 360) % 360;
 }
 
-function bearingToArrow(deg) {
-  return ["↑","↗","→","↘","↓","↙","←","↖"][Math.round(deg/45)%8];
+function bearingArrow(deg) {
+  return ["↑","↗","→","↘","↓","↙","←","↖"][Math.round(deg/45) % 8];
 }
 
-function fmtKm(km) {
-  if (km >= 10000) return Math.round(km / 1000) + " tys. km";
-  if (km >= 1000)  return (km / 1000).toFixed(1) + " tys. km";
-  return Math.round(km) + " km";
+function fmtDist(km) {
+  if (km < 100)   return Math.round(km) + " km";
+  if (km < 1000)  return Math.round(km/10)*10 + " km";
+  if (km < 10000) return (km/1000).toFixed(1) + " tys. km";
+  return Math.round(km/1000) + " tys. km";
 }
 
-function shakeInput() {
-  els.guessInput.style.borderColor = "var(--danger)";
-  els.guessInput.animate([
-    {transform:"translateX(0)"},{transform:"translateX(-6px)"},
-    {transform:"translateX(6px)"},{transform:"translateX(-4px)"},
-    {transform:"translateX(4px)"},{transform:"translateX(0)"},
-  ], {duration:300}).onfinish = () => { els.guessInput.style.borderColor = ""; };
+function shake() {
+  el.input.style.borderColor = "var(--danger)";
+  el.input.animate([
+    {transform:"translateX(0)"},{transform:"translateX(-5px)"},
+    {transform:"translateX(5px)"},{transform:"translateX(-3px)"},
+    {transform:"translateX(3px)"},{transform:"translateX(0)"},
+  ], {duration:280}).onfinish = () => { el.input.style.borderColor = ""; };
 }
 
 function shuffle(arr) {
